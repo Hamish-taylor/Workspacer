@@ -9,9 +9,6 @@ use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, ExecutableCommand};
 
-use std::thread;
-use std::time::Duration;
-
 fn print_directories(
     dir: &str,
     selected: usize,
@@ -128,7 +125,7 @@ fn list_files(dir: &str) -> io::Result<(String)> {
                             offset += 1;
                         }
                     }
-                    (event::KeyCode::Right, _) => {
+                    (event::KeyCode::Right, _) | (event::KeyCode::Enter, _) => {
                         stdout.execute(cursor::Show)?;
                         terminal::disable_raw_mode()?;
                         execute!(io::stdout(), LeaveAlternateScreen);
@@ -175,7 +172,6 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     dbg!(args.to_owned());
     let primary_arg = args.get(1);
-    let file = args.get(2);
 
     if let Some(config_path) = get_config_path() {
         let config: Config = match load_config(&config_path) {
@@ -231,18 +227,17 @@ fn main() {
                         Err(err) => println!("Encountered error when selecting file: {:?}", err),
                     }
                 }
-                "open" | "o" if file.is_some() => {
-                    println!("{:?}", String::from("opening: ") + file.unwrap());
+                file => {
+                    println!("{:?}", String::from("opening: ") + file);
 
                     //Theoretically check that the file exists
                     //Then write it to a file
                     let workspace_path = config.workspaces.get(0).unwrap().path.to_owned();
-                    let folder_dir_to_open = workspace_path + "/" + file.unwrap();
+                    let folder_dir_to_open = workspace_path + "/" + file;
                     let mut path = config_path.parent().unwrap().to_path_buf();
                     path.push("file.txt");
                     fs::write(path, folder_dir_to_open).unwrap();
                 }
-                "open" | "o" => println!("Error opening project, no file specified"),
                 _ => println!("Unknow arg"),
             }
         }

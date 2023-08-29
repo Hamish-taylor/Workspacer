@@ -6,8 +6,23 @@ use std::io::{self, stdout, Write};
 use toml;
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::style::{
+    Attribute, Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, ExecutableCommand};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    workspaces: Vec<Workspace>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Workspace {
+    name: String,
+    path: String,
+}
 
 fn print_directories(
     dir: &str,
@@ -59,7 +74,6 @@ fn list_files(dir: &str) -> io::Result<(String)> {
     let terminal_height = terminal_size.1 as usize; // Height is the second element of the tuple
 
     let mut stdout = stdout();
-    stdout.execute(cursor::Hide)?;
 
     let mut selected = 0;
     let mut offset = 0;
@@ -67,39 +81,61 @@ fn list_files(dir: &str) -> io::Result<(String)> {
     let mut filter_string = String::new();
 
     let mut last_visible: Vec<String> = vec![];
+    let mut old_filter_string = String::new();
     stdout.flush()?;
     loop {
         let visible_directories =
             print_directories(dir, selected, offset, terminal_height, &filter_string)?;
 
+        //if new search string is longer
+        //  print new chars
+        //
+        //if new search string is shorter
+        //  clear the old chars
+
         // Update changed lines and keep track of the longest line for clearing purposes
+
+        stdout.execute(cursor::Hide)?;
         let mut max_len = 0;
         for (i, (last, new)) in last_visible.iter().zip(&visible_directories).enumerate() {
             max_len = max_len.max(last.len());
             if last != new {
+                if i == selected {
+                    stdout.execute(SetBackgroundColor(Color::Blue))?;
+                }
                 stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
-                print!("{}\r", " ".repeat(last.len()));
+                print!("{}\r", " ".repeat(terminal_size.0 as usize));
                 stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
                 print!("{}", new);
+                stdout.execute(ResetColor)?;
             }
         }
 
         // If the new list is shorter than the last, clear the remaining lines
         for i in visible_directories.len()..last_visible.len() {
             stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
-            print!("{}\r", " ".repeat(max_len));
+            print!("{}\r", " ".repeat(terminal_size.0 as usize));
         }
 
         // If the new list is longer than the last, print the new lines
         for i in last_visible.len()..visible_directories.len() {
+            if i == selected {
+                stdout.execute(SetBackgroundColor(Color::Blue))?;
+            }
             stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
             print!("{}", visible_directories[i]);
+            stdout.execute(ResetColor)?;
         }
+
+        stdout.execute(cursor::Show)?;
+        match render_search_text(terminal_height, &old_filter_string, &filter_string) {
+            Err(err) => panic!("{}", err),
+            _ => {}
+        };
 
         stdout.flush()?;
 
         last_visible = visible_directories;
-
         if let event::Event::Key(event::KeyEvent {
             code,
             kind,
@@ -128,7 +164,7 @@ fn list_files(dir: &str) -> io::Result<(String)> {
                     (event::KeyCode::Right, _) | (event::KeyCode::Enter, _) => {
                         stdout.execute(cursor::Show)?;
                         terminal::disable_raw_mode()?;
-                        execute!(io::stdout(), LeaveAlternateScreen);
+                        execute!(io::stdout(), LeaveAlternateScreen)?;
                         return Ok(last_visible
                             .clone()
                             .get(selected - offset)
@@ -136,12 +172,14 @@ fn list_files(dir: &str) -> io::Result<(String)> {
                             .replace("> ", ""));
                     }
                     (event::KeyCode::Backspace, _) => {
+                        old_filter_string = filter_string.clone();
                         filter_string.pop();
+                        selected = 0;
                     }
                     (event::KeyCode::Char(char), _) => {
+                        old_filter_string = filter_string.clone();
                         filter_string.push(char);
                         selected = 0;
-                        io::stdout().execute(terminal::Clear(ClearType::All))?;
                     }
                     _ => {}
                 }
@@ -151,21 +189,36 @@ fn list_files(dir: &str) -> io::Result<(String)> {
 
     stdout.execute(cursor::Show)?;
     terminal::disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen);
+    execute!(io::stdout(), LeaveAlternateScreen)?;
     Ok("".to_owned())
 }
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Config {
-    workspaces: Vec<Workspace>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Workspace {
-    name: String,
-    path: String,
+fn render_search_text(
+    terminal_height: usize,
+    old_filter_string: &String,
+    filter_string: &String,
+) -> Result<(), Error> {
+    let old_count = old_filter_string.chars().count();
+    let new_count = filter_string.chars().count();
+    if old_count < new_count {
+        for (i, c) in filter_string.chars().skip(old_count).enumerate() {
+            io::stdout().execute(cursor::MoveTo(
+                (old_count + i) as u16,
+                terminal_height as u16,
+            ))?;
+            print!("{}", c);
+        }
+    } else if old_count > new_count {
+        io::stdout().execute(cursor::MoveTo(new_count as u16, terminal_height as u16))?;
+        print!("{}", " ".repeat(old_count - new_count));
+        io::stdout().execute(cursor::MoveTo(
+            filter_string.chars().count() as u16,
+            terminal_height as u16,
+        ))?;
+    } else {
+        io::stdout().execute(cursor::MoveTo(0 as u16, terminal_height as u16))?;
+    }
+    Ok(())
 }
 
 fn main() {
@@ -238,7 +291,6 @@ fn main() {
                     path.push("file.txt");
                     fs::write(path, folder_dir_to_open).unwrap();
                 }
-                _ => println!("Unknow arg"),
             }
         }
     }

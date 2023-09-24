@@ -1,0 +1,31 @@
+[[workspace]]
+name = "workspacer"
+
+[[workspace.tab]]
+title = "workspacer"
+starting_directory = "path"
+commands = ["powershell.exe", "-NoExit", "nvim", "."]
+
+[[workspace.tab]]
+starting_directory = "path"
+split_pane = true 
+commands = ["powershell.exe", "-NoExit", "nvim", "."]
+
+
+[[workspace.tab]]
+title = "Tab2"
+starting_directory = "path"
+split_pane = false
+commands = ["powershell.exe", "-NoExit", "nvim", "."]
+
+[[workspace.tab]]
+starting_directory = "path"
+split_pane = true 
+
+[[workspace]]
+name = "config"
+
+
+[[workspace.tab]]
+starting_directory = "YourUser\\AppData\\Roaming\\Workspacer"
+commands = ["powershell.exe", "nvim", "config.toml"]

@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::io::Error;
 use std::io::{self, stdout, Write};
+use std::process::Command;
 use toml;
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
@@ -13,40 +14,34 @@ use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateS
 use crossterm::{cursor, execute, ExecutableCommand};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 struct Config {
-    workspaces: Vec<Workspace>,
+    workspace: Vec<Workspace>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 struct Workspace {
     name: String,
-    path: String,
+    tab: Vec<Tab>,
 }
 
+#[derive(Debug, Deserialize)]
+struct Tab {
+    title: Option<String>,
+    starting_directory: String,
+    commands: Option<Vec<String>>,
+    split_pane: Option<bool>,
+}
+
+struct TerminalLine {}
+
 fn print_directories(
-    dir: &str,
+    directories: &Vec<String>,
     selected: usize,
     offset: usize,
     terminal_height: usize,
     filter_string: &String,
 ) -> io::Result<Vec<String>> {
-    let paths = fs::read_dir(dir)?;
-    let mut directories = vec![];
-
-    for path in paths {
-        if let Ok(entry) = path {
-            let file_name = match entry.file_name().into_string() {
-                Ok(v) => v.to_lowercase(),
-                Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "")),
-            };
-            if entry.file_type().unwrap().is_dir() && file_name.starts_with(filter_string.as_str())
-            {
-                directories.push(entry.file_name().into_string().unwrap());
-            }
-        }
-    }
-
     let end = std::cmp::min(offset + terminal_height - 2, directories.len());
     let visible_directories: Vec<String> = directories
         .iter()
@@ -83,9 +78,32 @@ fn list_files(dir: &str) -> io::Result<(String)> {
     let mut last_visible: Vec<String> = vec![];
     let mut old_filter_string = String::new();
     stdout.flush()?;
+
+    let paths = fs::read_dir(dir)?;
+
+    let mut directories = vec![];
+
+    for path in paths {
+        if let Ok(entry) = path {
+            let file_name = match entry.file_name().into_string() {
+                Ok(v) => v.to_lowercase(),
+                Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "")),
+            };
+            if entry.file_type().unwrap().is_dir() && file_name.starts_with(filter_string.as_str())
+            {
+                directories.push(entry.file_name().into_string().unwrap());
+            }
+        }
+    }
+
     loop {
-        let visible_directories =
-            print_directories(dir, selected, offset, terminal_height, &filter_string)?;
+        let visible_directories = print_directories(
+            &directories,
+            selected,
+            offset,
+            terminal_height - 2,
+            &filter_string,
+        )?;
 
         //if new search string is longer
         //  print new chars
@@ -100,7 +118,7 @@ fn list_files(dir: &str) -> io::Result<(String)> {
         for (i, (last, new)) in last_visible.iter().zip(&visible_directories).enumerate() {
             max_len = max_len.max(last.len());
             if last != new {
-                if i == selected {
+                if (i + offset) == selected {
                     stdout.execute(SetBackgroundColor(Color::Blue))?;
                 }
                 stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
@@ -119,11 +137,12 @@ fn list_files(dir: &str) -> io::Result<(String)> {
 
         // If the new list is longer than the last, print the new lines
         for i in last_visible.len()..visible_directories.len() {
-            if i == selected {
+            if (i + offset) == selected {
                 stdout.execute(SetBackgroundColor(Color::Blue))?;
             }
             stdout.execute(cursor::MoveTo(0, (i + 1) as u16))?;
             print!("{}", visible_directories[i]);
+            print!("{}\r", " ".repeat(terminal_size.0 as usize));
             stdout.execute(ResetColor)?;
         }
 
@@ -149,16 +168,18 @@ fn list_files(dir: &str) -> io::Result<(String)> {
                     (event::KeyCode::Up, _) => {
                         if selected > 0 {
                             selected -= 1;
-                            if selected < offset {
+                            if selected - 7 < offset {
                                 offset -= 1;
                             }
                         }
                     }
                     (event::KeyCode::Down, _) => {
-                        selected += 1;
-                        if selected >= offset + terminal_height {
-                            // Assuming we are showing 10 at a time
-                            offset += 1;
+                        if selected + 1 < directories.len() {
+                            selected += 1;
+                            if selected >= offset + terminal_height - 8 {
+                                // Assuming we are showing 10 at a time
+                                offset += 1;
+                            }
                         }
                     }
                     (event::KeyCode::Right, _) | (event::KeyCode::Enter, _) => {
@@ -228,74 +249,75 @@ fn main() {
 
     if let Some(config_path) = get_config_path() {
         let config: Config = match load_config(&config_path) {
-            Ok(config) => {
-                println!("Loaded config: {:?}", config);
-                config
+            Ok(w) => {
+                println!("Loaded config: {:?}", w);
+                w
             }
-            Err(_) => {
-                println!("No config found, running init");
-                let mut initialized = false;
-
-                while !initialized {
-                    initialized = init();
-                }
+            Err(err) => {
+                println!("No config found: {:?}", err);
                 return;
             }
         };
-        //clear the file path
-        let mut file_path = config_path.clone().parent().unwrap().to_path_buf();
-        file_path.push("file.txt");
-        println!("Saving config to: {:?}", file_path);
-        fs::write(file_path, "");
 
-        println!("{:?}", config.workspaces.get(0).unwrap().path.as_str());
+        println!("{:?}", config);
         if let Some(value) = primary_arg {
             match value.to_lowercase().as_str() {
-                //"init" | "i" => init(),
-                "list" | "lf" | "l" => {
-                    match list_files(config.workspaces.get(0).unwrap().path.as_str()) {
-                        Ok(file) => {
-                            if file != "".to_owned() {
-                                println!("Selected: {:?}", file);
-
-                                //Theoretically check that the file exists
-                                //Then write it to a file
-                                let workspace_path = match config.workspaces.get(0) {
-                                    Some(v) => v.path.to_owned(),
-                                    None => panic!("Error"),
-                                };
-                                println!("workspace_path: {:?}", workspace_path);
-                                let folder_dir_to_open = workspace_path + "/" + file.as_str();
-                                let mut path = config_path.parent().unwrap().to_path_buf();
-                                path.push("file.txt");
-                                println!("Saving file {:?} to {:?}", folder_dir_to_open, path);
-                                match fs::write(path, folder_dir_to_open) {
-                                    Err(err) => println!("Error, {:?}", err),
-                                    _ => {}
-                                }
-                            } else {
-                                println!("err");
-                            }
-                        }
-                        Err(err) => println!("Encountered error when selecting file: {:?}", err),
+                "--list" => {
+                    for workspace in config.workspace {
+                        println!("{}",workspace.name);
                     }
                 }
-                file => {
-                    println!("{:?}", String::from("opening: ") + file);
+                w => {
+                    let mut command = Command::new("wt");
+                    let workspace : &Workspace = config.workspace.iter().find(|workspace| workspace.name == w).unwrap();
+                    for (i, tab) in workspace.tab.iter().enumerate() {
+                        if i > 0 {
+                            command.arg(";");
+                            if let Some(split_pane) = &tab.split_pane {
+                                if *split_pane {
+                                    command.arg("split-pane");
+                                } else {
+                                    command.arg("new-tab");
+                                }
+                            } else {
+                                command.arg("new-tab");
+                            }
+                        }
+                        if let Some(title) = &tab.title {
+                            command.arg("--title").arg(title);
+                        }
+                        command
+                            .arg("--startingDirectory")
+                            .arg(&tab.starting_directory);
+                        if let Some(commands) = &tab.commands {
+                            for c in commands {
+                                command.arg(&c);
+                            }
+                        }
+                    }
 
-                    //Theoretically check that the file exists
-                    //Then write it to a file
-                    let workspace_path = config.workspaces.get(0).unwrap().path.to_owned();
-                    let folder_dir_to_open = workspace_path + "/" + file;
-                    let mut path = config_path.parent().unwrap().to_path_buf();
-                    path.push("file.txt");
-                    fs::write(path, folder_dir_to_open).unwrap();
+                    match command.status() {
+                        Ok(status) => {
+                            if status.success() {
+                                println!("Successfully opened Windows Terminal with tabs.");
+                            } else {
+                                eprintln!("Command executed with error: {:?}", status);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to execute command: {}", e);
+                        }
+                    }
+                }
+                _ => {
+                    println!("Unknow command");
                 }
             }
         }
     }
 }
 
+/*
 fn init() -> bool {
     let mut input = String::new();
 
@@ -358,6 +380,7 @@ fn init() -> bool {
 
     true
 }
+*/
 
 fn get_config_path() -> Option<std::path::PathBuf> {
     if let Some(mut config_dir) = dirs::config_dir() {
@@ -369,16 +392,15 @@ fn get_config_path() -> Option<std::path::PathBuf> {
     }
 }
 
-fn load_config(path: &std::path::Path) -> Result<Config, Error> {
+fn load_config(path: &std::path::Path) -> Result<Config, toml::de::Error> {
     println!("Loading config from: {:?}", path);
 
-    let data = fs::read_to_string(path)?;
-
-    let config: Config = toml::from_str(&data)
-        .map_err(|e: toml::de::Error| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let data = fs::read_to_string(path).unwrap();
+    println!("{}", data);
+    let config: Config = toml::from_str(&data)?;
     Ok(config)
 }
-
+/*
 fn save_config(config: &Config, path: &std::path::Path) -> Result<(), Error> {
     println!("Saving config to: {:?}", path);
     let content = toml::to_string_pretty(config)
@@ -387,3 +409,4 @@ fn save_config(config: &Config, path: &std::path::Path) -> Result<(), Error> {
     fs::write(path, content)?;
     Ok(())
 }
+*/

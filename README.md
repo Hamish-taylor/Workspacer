@@ -16,4 +16,4 @@ The config should be located in your pc config location, for windows this is `./
 ## Commands
 - `-list`: Lists the names of your workspaces
 - `-new`: Creates a new workspace
-- 'ANYINPUT': Any text input that is not a command will be interpreted as a workspace name that it will attempt to open
+- `ANYINPUT`: Any text input that is not a command will be interpreted as a workspace name that it will attempt to open

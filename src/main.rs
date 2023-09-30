@@ -1,6 +1,7 @@
 use dirs;
 use std::env;
 use std::fs;
+use std::io::stdin;
 use std::io::Error;
 use std::io::{self, stdout, Write};
 use std::process::Command;
@@ -14,18 +15,18 @@ use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateS
 use crossterm::{cursor, execute, ExecutableCommand};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Config {
     workspace: Vec<Workspace>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Workspace {
     name: String,
     tab: Vec<Tab>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Tab {
     title: Option<String>,
     starting_directory: String,
@@ -60,7 +61,7 @@ fn print_directories(
     Ok(visible_directories)
 }
 
-fn list_files(dir: &str) -> io::Result<(String)> {
+fn list_files(dir: &str) -> io::Result<String> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
     stdout().execute(terminal::Clear(ClearType::All))?;
@@ -244,13 +245,11 @@ fn render_search_text(
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    dbg!(args.to_owned());
     let primary_arg = args.get(1);
 
     if let Some(config_path) = get_config_path() {
-        let config: Config = match load_config(&config_path) {
+        let mut config: Config = match load_config(&config_path) {
             Ok(w) => {
-                println!("Loaded config: {:?}", w);
                 w
             }
             Err(err) => {
@@ -259,17 +258,24 @@ fn main() {
             }
         };
 
-        println!("{:?}", config);
         if let Some(value) = primary_arg {
             match value.to_lowercase().as_str() {
-                "--list" => {
+                "-new" => {
+                    config.workspace.push(create_new_workspace_command().unwrap());
+                    save_config(&config, &config_path).unwrap();
+                }
+                "-list" => {
                     for workspace in config.workspace {
-                        println!("{}",workspace.name);
+                        println!("{}", workspace.name);
                     }
                 }
                 w => {
                     let mut command = Command::new("wt");
-                    let workspace : &Workspace = config.workspace.iter().find(|workspace| workspace.name == w).unwrap();
+                    let workspace: &Workspace = config
+                        .workspace
+                        .iter()
+                        .find(|workspace| workspace.name.to_lowercase() == w.to_lowercase())
+                        .unwrap();
                     for (i, tab) in workspace.tab.iter().enumerate() {
                         if i > 0 {
                             command.arg(";");
@@ -315,6 +321,89 @@ fn main() {
             }
         }
     }
+}
+
+fn create_new_workspace_command() -> Result<Workspace, Error> {
+    let mut stdout = stdout();
+
+    let mut name = String::new();
+
+    stdout.execute(cursor::Show)?;
+
+    print!("Enter workspace name: ");
+    stdout.flush()?;
+
+    read_input(&mut name)?;
+
+    let mut tabs = vec![];
+    loop {
+        let mut title = String::new();
+        print!("Enter title for the tab: ");
+        stdout.flush()?;
+        read_input(&mut title)?;
+
+        let mut starting_directory = String::new();
+        print!("Enter starting directory for the Tab: ");
+        stdout.flush()?;
+        read_input(&mut starting_directory)?;
+
+        let mut commands = String::new();
+        print!("Enter commands for the tab: ");
+        stdout.flush()?;
+        read_input(&mut commands)?;
+
+        let mut split_pane_str = String::new();
+        let mut split_pane = false;
+        loop {
+            print!("Tab should be a split pane? y/n: ");
+            stdout.flush()?;
+            read_input(&mut split_pane_str)?;
+
+            if split_pane_str.trim().eq_ignore_ascii_case("y") {
+                split_pane = true;
+                break;
+            } else {
+                break;
+            }
+        }
+        // Further questions can be added as needed...
+        // ...
+
+        let tab = Tab {
+            title: if title.is_empty() { None } else { Some(title) },
+            starting_directory,
+            commands: Some(commands.split(" ").map(|a| a.to_string()).collect()),
+            split_pane: Some(split_pane),
+        };
+        tabs.push(tab);
+        print!("Would you like to make another tab y/n: ");
+        let mut ctn = String::new();
+        stdout.flush()?;
+        read_input(&mut ctn)?;
+
+        println!("_{}_",ctn);
+        if !ctn.trim().eq_ignore_ascii_case("y") {
+            println!("{}",ctn);
+            break;
+        }  
+    }
+
+    let workspace = Workspace { name, tab: tabs };
+
+    // Now, use the created workspace...
+    println!("Created Workspace: {:?}", workspace);
+
+    Ok(workspace)
+}
+
+fn read_input(input: &mut String) -> io::Result<bool> {
+    input.clear();
+    stdin().read_line(input)?;
+    if input.trim().eq_ignore_ascii_case("q") {
+        return Ok(true);
+    }
+    *input =  input.trim().trim_end_matches("\n").trim_end_matches("\r").to_string();
+    Ok(false)
 }
 
 /*
@@ -393,20 +482,16 @@ fn get_config_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_config(path: &std::path::Path) -> Result<Config, toml::de::Error> {
-    println!("Loading config from: {:?}", path);
 
     let data = fs::read_to_string(path).unwrap();
-    println!("{}", data);
     let config: Config = toml::from_str(&data)?;
     Ok(config)
 }
-/*
+
 fn save_config(config: &Config, path: &std::path::Path) -> Result<(), Error> {
-    println!("Saving config to: {:?}", path);
     let content = toml::to_string_pretty(config)
         .map_err(|e: toml::ser::Error| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     fs::write(path, content)?;
     Ok(())
 }
-*/

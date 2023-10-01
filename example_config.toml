@@ -29,3 +29,8 @@ name = "config"
 [[workspace.tab]]
 starting_directory = "YourUser\\AppData\\Roaming\\Workspacer"
 commands = ["powershell.exe", "nvim", "config.toml"]
+
+
+[[workspace]]
+name = "config"
+group = ["workspacer", "config"]

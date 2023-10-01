@@ -7,12 +7,7 @@ use std::io::{self, stdout, Write};
 use std::process::Command;
 use toml;
 
-use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::style::{
-    Attribute, Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor,
-};
-use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{cursor, execute, ExecutableCommand};
+use crossterm::{cursor, ExecutableCommand};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -21,9 +16,19 @@ struct Config {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct Workspace {
-    name: String,
-    tab: Vec<Tab>,
+#[serde(untagged)]
+enum Workspace {
+    WorkspaceVariant { name: String, tab: Vec<Tab> },
+    GroupVariant { name: String, group: Vec<String> },
+}
+
+impl Workspace {
+    fn name(&self) -> &String {
+        match self {
+            Workspace::WorkspaceVariant { name, .. } => name,
+            Workspace::GroupVariant { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -34,15 +39,72 @@ struct Tab {
     split_pane: Option<bool>,
 }
 
+fn get_workspace(config: &Config, workspace_string: String) -> Option<&Workspace> {
+    config
+        .workspace
+        .iter()
+        .find(|workspace| workspace.name().to_lowercase() == workspace_string.to_lowercase())
+}
+
+fn open_workspace(config: &Config, workspace: &Workspace) {
+    match workspace {
+        Workspace::GroupVariant { name, group } => {
+            for workspace_name in group {
+                let w = get_workspace(config, workspace_name.clone()).unwrap();
+                open_workspace(&config, &w);
+            }
+        }
+        Workspace::WorkspaceVariant { name, tab } => {
+            let mut command = Command::new("wt");
+            for (i, tab) in tab.iter().enumerate() {
+                if i > 0 {
+                    command.arg(";");
+                    if let Some(split_pane) = &tab.split_pane {
+                        if *split_pane {
+                            command.arg("split-pane");
+                        } else {
+                            command.arg("new-tab");
+                        }
+                    } else {
+                        command.arg("new-tab");
+                    }
+                }
+                if let Some(title) = &tab.title {
+                    command.arg("--title").arg(title);
+                }
+                command
+                    .arg("--startingDirectory")
+                    .arg(&tab.starting_directory);
+                if let Some(commands) = &tab.commands {
+                    for c in commands {
+                        command.arg(&c);
+                    }
+                }
+            }
+
+            match command.status() {
+                Ok(status) => {
+                    if status.success() {
+                        println!("Successfully opened Windows Terminal with tabs.");
+                    } else {
+                        eprintln!("Command executed with error: {:?}", status);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to execute command: {}", e);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let primary_arg = args.get(1);
 
     if let Some(config_path) = get_config_path() {
         let mut config: Config = match load_config(&config_path) {
-            Ok(w) => {
-                w
-            }
+            Ok(inner_workspace) => inner_workspace,
             Err(err) => {
                 println!("No config found: {:?}", err);
                 return;
@@ -52,59 +114,20 @@ fn main() {
         if let Some(value) = primary_arg {
             match value.to_lowercase().as_str() {
                 "-new" => {
-                    config.workspace.push(create_new_workspace_command().unwrap());
+                    config
+                        .workspace
+                        .push(create_new_workspace_command().unwrap());
                     save_config(&config, &config_path).unwrap();
                 }
                 "-list" => {
                     for workspace in config.workspace {
-                        println!("{}", workspace.name);
+                        println!("{}", workspace.name());
                     }
                 }
                 w => {
                     let mut command = Command::new("wt");
-                    let workspace: &Workspace = config
-                        .workspace
-                        .iter()
-                        .find(|workspace| workspace.name.to_lowercase() == w.to_lowercase())
-                        .unwrap();
-                    for (i, tab) in workspace.tab.iter().enumerate() {
-                        if i > 0 {
-                            command.arg(";");
-                            if let Some(split_pane) = &tab.split_pane {
-                                if *split_pane {
-                                    command.arg("split-pane");
-                                } else {
-                                    command.arg("new-tab");
-                                }
-                            } else {
-                                command.arg("new-tab");
-                            }
-                        }
-                        if let Some(title) = &tab.title {
-                            command.arg("--title").arg(title);
-                        }
-                        command
-                            .arg("--startingDirectory")
-                            .arg(&tab.starting_directory);
-                        if let Some(commands) = &tab.commands {
-                            for c in commands {
-                                command.arg(&c);
-                            }
-                        }
-                    }
-
-                    match command.status() {
-                        Ok(status) => {
-                            if status.success() {
-                                println!("Successfully opened Windows Terminal with tabs.");
-                            } else {
-                                eprintln!("Command executed with error: {:?}", status);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to execute command: {}", e);
-                        }
-                    }
+                    let workspace: &Workspace = get_workspace(&config, w.into()).unwrap();
+                    open_workspace(&config, workspace);
                 }
                 _ => {
                     println!("Unknow command");
@@ -172,14 +195,17 @@ fn create_new_workspace_command() -> Result<Workspace, Error> {
         stdout.flush()?;
         read_input(&mut ctn)?;
 
-        println!("_{}_",ctn);
+        println!("_{}_", ctn);
         if !ctn.trim().eq_ignore_ascii_case("y") {
-            println!("{}",ctn);
+            println!("{}", ctn);
             break;
-        }  
+        }
     }
 
-    let workspace = Workspace { name, tab: tabs };
+    let workspace = Workspace::WorkspaceVariant {
+        name,
+        tab: tabs,
+    };
 
     // Now, use the created workspace...
     println!("Created Workspace: {:?}", workspace);
@@ -193,7 +219,11 @@ fn read_input(input: &mut String) -> io::Result<bool> {
     if input.trim().eq_ignore_ascii_case("q") {
         return Ok(true);
     }
-    *input =  input.trim().trim_end_matches("\n").trim_end_matches("\r").to_string();
+    *input = input
+        .trim()
+        .trim_end_matches("\n")
+        .trim_end_matches("\r")
+        .to_string();
     Ok(false)
 }
 
@@ -201,7 +231,7 @@ fn read_input(input: &mut String) -> io::Result<bool> {
 fn init() -> bool {
     let mut input = String::new();
 
-    println!("Please enter a path for your first workspace \n(note that aditional workspaces can be added using the 'workspacer w <path>' command)");
+    println!("Please enter a path for your first workspace \n(note that aditional workspaces can be added using the 'workspacer inner_workspace <path>' command)");
 
     match io::stdin().read_line(&mut input) {
         Err(err) => {
@@ -273,7 +303,6 @@ fn get_config_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_config(path: &std::path::Path) -> Result<Config, toml::de::Error> {
-
     let data = fs::read_to_string(path).unwrap();
     let config: Config = toml::from_str(&data)?;
     Ok(config)

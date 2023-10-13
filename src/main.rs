@@ -18,8 +18,16 @@ struct Config {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 enum Workspace {
-    WorkspaceVariant { name: String, tab: Vec<Tab> },
     GroupVariant { name: String, group: Vec<String> },
+    WorkspaceVariant { name: String, tab: Vec<Tab> },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Tab {
+    title: Option<String>,
+    starting_directory: String,
+    commands: Option<Vec<String>>,
+    split_pane: Option<bool>,
 }
 
 impl Workspace {
@@ -29,14 +37,6 @@ impl Workspace {
             Workspace::GroupVariant { name, .. } => name,
         }
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Tab {
-    title: Option<String>,
-    starting_directory: String,
-    commands: Option<Vec<String>>,
-    split_pane: Option<bool>,
 }
 
 fn get_workspace(config: &Config, workspace_string: String) -> Option<&Workspace> {
@@ -202,10 +202,7 @@ fn create_new_workspace_command() -> Result<Workspace, Error> {
         }
     }
 
-    let workspace = Workspace::WorkspaceVariant {
-        name,
-        tab: tabs,
-    };
+    let workspace = Workspace::WorkspaceVariant { name, tab: tabs };
 
     // Now, use the created workspace...
     println!("Created Workspace: {:?}", workspace);
